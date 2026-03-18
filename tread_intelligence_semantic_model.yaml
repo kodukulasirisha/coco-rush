@@ -1,0 +1,377 @@
+name: tread_intelligence_semantic_model
+description: |
+  Semantic model for Tread Intelligence procurement system.
+  Enables natural language queries about inventory, forecasts, and purchase order recommendations.
+
+tables:
+  - name: PO_RECOMMENDATIONS
+    description: AI-generated purchase order recommendations with justifications
+    base_table:
+      database: TIRECO_DW
+      schema: PROCUREMENT
+      table: PO_RECOMMENDATIONS
+    dimensions:
+      - name: recommendation_id
+        description: Unique identifier for the recommendation
+        expr: recommendation_id
+        data_type: VARCHAR
+      - name: sku_code
+        description: SKU code (e.g., MST-285/70R17-MT)
+        expr: sku_code
+        data_type: VARCHAR
+      - name: sku_name
+        description: Full product name
+        expr: sku_name
+        data_type: VARCHAR
+      - name: brand_name
+        description: Tire brand (Milestar, Falken, Nitto, etc.)
+        expr: brand_name
+        data_type: VARCHAR
+      - name: dc_code
+        description: Distribution center code (DC001, DC002, etc.)
+        expr: dc_code
+        data_type: VARCHAR
+      - name: dc_name
+        description: Distribution center name (Denver Distribution Center, etc.)
+        expr: dc_name
+        data_type: VARCHAR
+      - name: vendor_name
+        description: Supplier/vendor name
+        expr: vendor_name
+        data_type: VARCHAR
+      - name: urgency_level
+        description: Urgency level - CRITICAL, HIGH, MEDIUM, or LOW
+        expr: urgency_level
+        data_type: VARCHAR
+        sample_values:
+          - CRITICAL
+          - HIGH
+          - MEDIUM
+          - LOW
+      - name: status
+        description: Recommendation status - PENDING_REVIEW, APPROVED, REJECTED, MODIFIED
+        expr: status
+        data_type: VARCHAR
+        sample_values:
+          - PENDING_REVIEW
+          - APPROVED
+          - REJECTED
+          - MODIFIED
+      - name: weather_factor
+        description: Weather condition affecting demand
+        expr: weather_factor
+        data_type: VARCHAR
+        sample_values:
+          - SNOW_FORECAST
+          - CLEAR
+          - RAIN_FORECAST
+          - STORM_WARNING
+      - name: port_delay_factor
+        description: Port congestion level
+        expr: port_delay_factor
+        data_type: VARCHAR
+        sample_values:
+          - NORMAL
+          - MODERATE_DELAY
+          - HIGH_DELAY
+      - name: justification_text
+        description: AI-generated explanation for the recommendation
+        expr: justification_text
+        data_type: VARCHAR
+      - name: recommendation_date
+        description: Date the recommendation was generated
+        expr: recommendation_date
+        data_type: DATE
+    measures:
+      - name: recommended_qty
+        description: Recommended order quantity in units
+        expr: recommended_qty
+        data_type: NUMBER
+        default_aggregation: sum
+      - name: unit_cost
+        description: Cost per unit in USD
+        expr: unit_cost
+        data_type: DECIMAL
+        default_aggregation: avg
+      - name: estimated_total_cost
+        description: Total estimated cost of the order in USD
+        expr: estimated_total_cost
+        data_type: DECIMAL
+        default_aggregation: sum
+      - name: current_inventory
+        description: Current inventory on hand in units
+        expr: current_inventory
+        data_type: NUMBER
+        default_aggregation: sum
+      - name: days_of_supply
+        description: Days of supply at current demand rate
+        expr: days_of_supply
+        data_type: DECIMAL
+        default_aggregation: avg
+      - name: forecasted_demand_28d
+        description: Forecasted demand for next 28 days
+        expr: forecasted_demand_28d
+        data_type: NUMBER
+        default_aggregation: sum
+      - name: priority_score
+        description: Priority score 0-100, higher is more urgent
+        expr: priority_score
+        data_type: DECIMAL
+        default_aggregation: avg
+      - name: recommendation_count
+        description: Count of recommendations
+        expr: "1"
+        data_type: NUMBER
+        default_aggregation: count
+
+  - name: INVENTORY_HEALTH_CURRENT
+    description: Current inventory health status by SKU and DC
+    base_table:
+      database: TIRECO_DW
+      schema: GOLD
+      table: INVENTORY_HEALTH_CURRENT
+    dimensions:
+      - name: sku_id
+        description: SKU identifier
+        expr: sku_id
+        data_type: VARCHAR
+      - name: sku_code
+        description: SKU code
+        expr: sku_code
+        data_type: VARCHAR
+      - name: sku_name
+        description: Product name
+        expr: sku_name
+        data_type: VARCHAR
+      - name: brand_name
+        description: Tire brand
+        expr: brand_name
+        data_type: VARCHAR
+      - name: category_l1
+        description: Top-level category (PASSENGER, LIGHT_TRUCK)
+        expr: category_l1
+        data_type: VARCHAR
+      - name: category_l2
+        description: Sub-category (MUD_TERRAIN, ALL_TERRAIN, etc.)
+        expr: category_l2
+        data_type: VARCHAR
+      - name: dc_code
+        description: Distribution center code
+        expr: dc_code
+        data_type: VARCHAR
+      - name: dc_name
+        description: Distribution center name
+        expr: dc_name
+        data_type: VARCHAR
+      - name: city
+        description: DC city
+        expr: city
+        data_type: VARCHAR
+      - name: state
+        description: DC state
+        expr: state
+        data_type: VARCHAR
+      - name: region
+        description: Geographic region (WEST, MIDWEST, EAST, SOUTH)
+        expr: region
+        data_type: VARCHAR
+        sample_values:
+          - WEST
+          - MIDWEST
+          - EAST
+          - SOUTH
+      - name: inventory_status
+        description: Inventory health status
+        expr: inventory_status
+        data_type: VARCHAR
+        sample_values:
+          - STOCKOUT
+          - CRITICAL
+          - LOW
+          - HEALTHY
+          - OVERSTOCK
+      - name: primary_vendor
+        description: Primary supplier
+        expr: primary_vendor
+        data_type: VARCHAR
+    measures:
+      - name: qty_on_hand
+        description: Quantity on hand in units
+        expr: qty_on_hand
+        data_type: NUMBER
+        default_aggregation: sum
+      - name: qty_available
+        description: Quantity available for sale
+        expr: qty_available
+        data_type: NUMBER
+        default_aggregation: sum
+      - name: qty_in_transit
+        description: Quantity in transit
+        expr: qty_in_transit
+        data_type: NUMBER
+        default_aggregation: sum
+      - name: qty_on_order
+        description: Quantity on order
+        expr: qty_on_order
+        data_type: NUMBER
+        default_aggregation: sum
+      - name: days_of_supply
+        description: Days of supply remaining
+        expr: days_of_supply
+        data_type: DECIMAL
+        default_aggregation: avg
+      - name: avg_daily_sales_7d
+        description: Average daily sales over last 7 days
+        expr: avg_daily_sales_7d
+        data_type: DECIMAL
+        default_aggregation: avg
+      - name: avg_lead_time_days
+        description: Average vendor lead time in days
+        expr: avg_lead_time_days
+        data_type: NUMBER
+        default_aggregation: avg
+
+  - name: FORECAST_DEMAND
+    description: ML-generated demand forecasts
+    base_table:
+      database: TIRECO_DW
+      schema: ML
+      table: FORECAST_DEMAND
+    dimensions:
+      - name: forecast_date
+        description: Date of the forecast
+        expr: forecast_date
+        data_type: DATE
+      - name: sku_id
+        description: SKU identifier
+        expr: sku_id
+        data_type: VARCHAR
+      - name: sku_code
+        description: SKU code
+        expr: sku_code
+        data_type: VARCHAR
+      - name: dc_code
+        description: Distribution center code
+        expr: dc_code
+        data_type: VARCHAR
+      - name: horizon_days
+        description: Forecast horizon (1, 7, 14, 28 days)
+        expr: horizon_days
+        data_type: NUMBER
+        sample_values:
+          - 1
+          - 7
+          - 14
+          - 28
+    measures:
+      - name: predicted_demand_qty
+        description: Predicted demand quantity
+        expr: predicted_demand_qty
+        data_type: NUMBER
+        default_aggregation: sum
+      - name: prediction_interval_lower
+        description: Lower bound of 95% prediction interval
+        expr: prediction_interval_lower
+        data_type: NUMBER
+        default_aggregation: sum
+      - name: prediction_interval_upper
+        description: Upper bound of 95% prediction interval
+        expr: prediction_interval_upper
+        data_type: NUMBER
+        default_aggregation: sum
+      - name: model_confidence
+        description: Model confidence score 0-1
+        expr: model_confidence
+        data_type: DECIMAL
+        default_aggregation: avg
+
+verified_queries:
+  - name: critical_recommendations
+    question: "What are the critical purchase order recommendations?"
+    sql: |
+      SELECT 
+        recommendation_id,
+        sku_code,
+        sku_name,
+        dc_name,
+        recommended_qty,
+        estimated_total_cost,
+        days_of_supply,
+        justification_text
+      FROM TIRECO_DW.PROCUREMENT.PO_RECOMMENDATIONS
+      WHERE status = 'PENDING_REVIEW' 
+        AND urgency_level = 'CRITICAL'
+      ORDER BY priority_score DESC
+      LIMIT 20
+
+  - name: dc_recommendations
+    question: "What should I order for {dc_name}?"
+    sql: |
+      SELECT 
+        sku_code,
+        sku_name,
+        brand_name,
+        recommended_qty,
+        estimated_total_cost,
+        urgency_level,
+        days_of_supply,
+        weather_factor,
+        justification_text
+      FROM TIRECO_DW.PROCUREMENT.PO_RECOMMENDATIONS
+      WHERE status = 'PENDING_REVIEW'
+        AND LOWER(dc_name) LIKE LOWER('%{dc_name}%')
+      ORDER BY priority_score DESC
+
+  - name: stockout_risk
+    question: "Which SKUs are at risk of stockout?"
+    sql: |
+      SELECT 
+        sku_code,
+        sku_name,
+        dc_name,
+        qty_on_hand,
+        days_of_supply,
+        avg_daily_sales_7d,
+        inventory_status
+      FROM TIRECO_DW.GOLD.INVENTORY_HEALTH_CURRENT
+      WHERE inventory_status IN ('STOCKOUT', 'CRITICAL')
+      ORDER BY days_of_supply ASC
+      LIMIT 50
+
+  - name: recommendation_summary
+    question: "Give me a summary of today's recommendations"
+    sql: |
+      SELECT 
+        urgency_level,
+        COUNT(*) as recommendation_count,
+        SUM(estimated_total_cost) as total_cost,
+        COUNT(DISTINCT dc_code) as dcs_affected,
+        COUNT(DISTINCT sku_code) as skus_affected
+      FROM TIRECO_DW.PROCUREMENT.PO_RECOMMENDATIONS
+      WHERE status = 'PENDING_REVIEW'
+      GROUP BY urgency_level
+      ORDER BY 
+        CASE urgency_level 
+          WHEN 'CRITICAL' THEN 1 
+          WHEN 'HIGH' THEN 2 
+          WHEN 'MEDIUM' THEN 3 
+          ELSE 4 
+        END
+
+  - name: region_recommendations
+    question: "Show recommendations for the {region} region"
+    sql: |
+      SELECT 
+        r.sku_code,
+        r.sku_name,
+        r.dc_name,
+        r.recommended_qty,
+        r.estimated_total_cost,
+        r.urgency_level,
+        r.justification_text
+      FROM TIRECO_DW.PROCUREMENT.PO_RECOMMENDATIONS r
+      JOIN TIRECO_DW.GOLD.INVENTORY_HEALTH_CURRENT i 
+        ON r.sku_code = i.sku_code AND r.dc_code = i.dc_code
+      WHERE r.status = 'PENDING_REVIEW'
+        AND UPPER(i.region) = UPPER('{region}')
+      ORDER BY r.priority_score DESC
