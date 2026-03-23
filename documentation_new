@@ -1,0 +1,638 @@
+# TREAD INTELLIGENCE
+## Intelligent Inventory Forecasting & Procurement System for Tireco
+
+**Version:** 2.0 | **Date:** March 20, 2026 | **Database:** `TIRECO_DW` | **Account:** `tq46961`
+
+---
+
+## 1. Executive Summary
+
+Tread Intelligence is an end-to-end AI-powered supply chain system built entirely inside Snowflake that transforms Tireco's procurement from reactive (buyers manually deciding what to order) to predictive (the system recommends optimal purchase orders with AI-generated justifications, incorporating weather forecasts, port congestion, economic signals, and ML demand predictions).
+
+**Scale:** 250 SKUs × 32 distribution centers × 8 vendors × 1,200+ customers across 4 US regions.
+
+### Target Business Impact
+
+| Metric | Target |
+|--------|--------|
+| Manual forecasting time | -70% reduction |
+| Stockout rate (high-demand SKUs) | -50% reduction |
+| Overstock carrying costs | -15% reduction |
+| Forecast accuracy (MAPE) | <15% |
+| Auto-generated PO approval rate | >80% |
+
+---
+
+## 2. The Business Problem
+
+Tireco is a major US tire distributor (Falken, Milestar brands). Buyers must manage **6,772 SKU-location combinations** across 32 warehouses. The core challenges:
+
+### 2.1 Current State (from live data)
+
+| Inventory Status | SKU-DCs | Units | Value |
+|-----------------|---------|-------|-------|
+| OVERSTOCK | 6,061 | 1,456,769 | $123.3M (capital tied up) |
+| STOCKOUT | 511 | 5,242 | $456K (lost sales) |
+| CRITICAL | 74 | 3,035 | $276K (about to stock out) |
+| LOW | 48 | 3,391 | $308K (needs reorder) |
+| HEALTHY | 78 | 2,085 | $171K |
+
+**The paradox:** $123M in overstock at some locations while 585 SKU-DCs are simultaneously stocked out or critical. This is the classic supply chain misallocation problem — too much of the wrong product in the wrong place.
+
+### 2.2 Root Causes
+
+1. **Reactive Lag** — Buyers order AFTER demand shifts. By the time they notice, stockouts have already occurred.
+2. **Contextual Blindness** — PO decisions ignore external signals (weather driving tire demand, port delays extending lead times, economic indicators shifting consumer behavior).
+3. **Scale Impossibility** — No human can manually optimize 6,772 SKU-DC combinations daily considering weather, ports, vendor constraints, and forecasted demand.
+4. **No Predictive Models** — Historical averages miss seasonal spikes, weather-driven demand, and trend shifts.
+
+---
+
+## 3. Solution Architecture
+
+### 3.1 Technology Stack (100% Snowflake-native)
+
+| Component | Snowflake Feature | Purpose |
+|-----------|------------------|---------|
+| Data Warehouse | Database + Schemas | Medallion architecture (Bronze→Silver→Gold) |
+| Real-time Aggregation | Dynamic Tables | Auto-refreshing demand and inventory views |
+| ML Forecasting | Cortex ML | Time-series demand prediction per SKU-DC |
+| AI Justifications | Cortex LLM (Complete) | Human-readable PO recommendation reasoning |
+| Orchestration | Snowflake Tasks (DAG) | Automated daily pipeline at 6 AM PT |
+| Dashboard | Streamlit in Snowflake | 6-tab interactive buyer dashboard |
+| Notifications | Email + Webhook Integrations | Daily/weekly alerts via email and Slack |
+| Natural Language | Cortex Agent + Analyst | Ask procurement questions in plain English |
+
+### 3.2 Database Structure
+
+```
+TIRECO_DW
+├── BRONZE         — Raw source system replicas (22 tables)
+├── EXTERNAL       — Weather, port, economic, vehicle data (5 tables)
+├── SILVER         — Conformed star schema: 5 dims + 3 facts
+├── GOLD           — Analytics-ready aggregations (3 dynamic tables)
+├── ML             — Forecast outputs (1 table, 1 procedure)
+├── PROCUREMENT    — PO recommendations + views (1 table, 3 views, 3 procedures)
+├── ORCHESTRATION  — Pipeline tasks + notification log (7 tasks, 6 procedures)
+├── APPS           — Streamlit dashboard + stage
+├── SEMANTIC        — Semantic model stage for Cortex Analyst
+└── INTEGRATIONS   — External push procedure
+```
+
+---
+
+## 4. Data Pipeline — End to End
+
+### 4.1 Pipeline DAG (runs daily at 6 AM PT)
+
+```
+TASK_DAILY_PIPELINE_ROOT (6 AM PT, CRON)
+│
+└──→ TASK_REFRESH_GOLD_LAYER
+│    Refreshes AGG_DEMAND_DAILY dynamic table
+│    (triggers cascade to AGG_DEMAND_WEEKLY + INVENTORY_HEALTH_CURRENT)
+│
+└──→ TASK_GENERATE_FORECASTS
+│    Calls ML.SP_GENERATE_FORECASTS()
+│    Cortex ML time-series per SKU-DC, 7/14/28 day horizons
+│
+└──→ TASK_GENERATE_PO_RECS
+│    Calls PROCUREMENT.SP_GENERATE_PO_RECOMMENDATIONS()
+│    Calculates optimal order qty using forecasts + external factors
+│
+└──→ TASK_ADD_JUSTIFICATIONS
+     Calls PROCUREMENT.SP_ADD_JUSTIFICATIONS()
+     Cortex LLM generates human-readable reasoning per recommendation
+
+Standalone notification tasks:
+  TASK_DAILY_PO_NOTIFICATION  — 8 AM PT daily (suspended, resume when ready)
+  TASK_WEEKLY_PO_NOTIFICATION — Monday 8 AM PT (suspended, resume when ready)
+```
+
+### 4.2 Data Flow Diagram
+
+```
+SOURCE SYSTEMS                    BRONZE (22 tables)              SILVER (8 tables)
+┌─────────────────┐              ┌───────────────────┐           ┌─────────────────┐
+│ ERP System      │──ingest──→   │ RAW_ERP_*         │──conform─→│ DIM_PRODUCT     │
+│ (POs, vendors,  │              │ (POs, PO lines,   │           │ DIM_LOCATION    │
+│  vendor terms)  │              │  receipts,        │           │ DIM_VENDOR      │
+│                 │              │  vendors, terms)  │           │ DIM_DATE        │
+│ WMS System      │──ingest──→   │ RAW_WMS_*         │           │ DIM_CUSTOMER    │
+│ (inventory,     │              │ (DCs, inventory,  │           │                 │
+│  transactions)  │              │  transactions)    │           │ FACT_PURCHASE_  │
+│                 │              │                   │           │   ORDERS        │
+│ Sales/CRM       │──ingest──→   │ RAW_SALES_*       │           │ FACT_SALES_     │
+│ (orders, lines, │              │ RAW_CRM_*         │           │   ORDERS        │
+│  returns)       │              │                   │           │ FACT_INVENTORY_ │
+│                 │              │ RAW_MDM_*         │           │   SNAPSHOT      │
+│ MDM System      │──ingest──→   │ (products, specs, │           └────────┬────────┘
+│ (products,      │              │  hierarchy)       │                    │
+│  pricing)       │              │ RAW_PRICE_*       │                    │
+│                 │              │ RAW_SUPP_*        │                    │
+│ Supplier Data   │──ingest──→   │ RAW_TMS_*         │                    │
+│ (capacity,      │              └───────────────────┘                    │
+│  scorecards,    │                                                       │
+│  transport)     │                                                       ▼
+└─────────────────┘
+                                                                 GOLD (3 dynamic tables)
+EXTERNAL SIGNALS               join at Gold layer              ┌──────────────────────┐
+┌─────────────────┐           ────────────────────→            │ AGG_DEMAND_DAILY     │
+│ Weather Hist.   │──zip+date──→                               │ (5.8M rows, 49 cols) │
+│ (25,792 records)│                                            │ Sales + Inventory +  │
+│                 │                                            │ Weather + Ports +    │
+│ Port Congestion │──port+date─→                               │ Economics per        │
+│ (5,642 records) │                                            │ SKU × DC × Day       │
+│                 │                                            ├──────────────────────┤
+│ Economic Ind.   │──state+mon─→                               │ AGG_DEMAND_WEEKLY    │
+│ (648 records)   │                                            │ (840K rows)          │
+│                 │                                            ├──────────────────────┤
+│ Vehicle Reg.    │──zip+month─→  (ML training features)       │ INVENTORY_HEALTH_    │
+│ (3,072 records) │                                            │ CURRENT (6,772 rows) │
+│                 │                                            └──────────┬───────────┘
+│ Weather Fcst.   │──zip+date──→  (direct algorithm input)                │
+│ (448 records)   │                                                       ▼
+└─────────────────┘                                            ML + PROCUREMENT
+                                                               ┌──────────────────────┐
+                                                               │ FORECAST_DEMAND      │
+                                                               │ (3,584 predictions)  │
+                                                               │ 7d/14d/28d horizons  │
+                                                               │ with 95% confidence  │
+                                                               ├──────────────────────┤
+                                                               │ PO_RECOMMENDATIONS   │
+                                                               │ (1,269 recs)         │
+                                                               │ With AI justification│
+                                                               │ Accept/Reject flow   │
+                                                               └──────────┬───────────┘
+                                                                          ▼
+                                                               APPS + NOTIFICATIONS
+                                                               ┌──────────────────────┐
+                                                               │ Streamlit Dashboard  │
+                                                               │ (6 tabs)             │
+                                                               │ Email/Slack Alerts   │
+                                                               │ Cortex Agent Chat    │
+                                                               └──────────────────────┘
+```
+
+---
+
+## 5. External Factors — Deep Dive
+
+Five external data sources are incorporated at multiple levels of the recommendation engine.
+
+### 5.1 Weather — Historical (`EXT_WEATHER_HISTORICAL`)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `TEMP_HIGH_F` / `TEMP_LOW_F` | NUMBER | Daily temperature range |
+| `PRECIPITATION_IN` | NUMBER | Daily rainfall |
+| `SNOWFALL_IN` | NUMBER | Daily snowfall |
+| `WEATHER_SEVERITY_INDEX` | NUMBER(1-5) | Composite severity score |
+| `CONDITION_CODE` | VARCHAR | CLEAR, RAIN, HEAVY_SNOW, etc. |
+
+**Granularity:** Daily × zip code (25,792 records, 2 years)
+
+**How it enters the system:**
+- Joined into `AGG_DEMAND_DAILY` via `zip_code + date` → becomes columns `WEATHER_TEMP_HIGH_F`, `WEATHER_PRECIP_IN`, `WEATHER_SNOW_IN`, `WEATHER_SEVERITY_INDEX`, `WEATHER_CONDITION_CODE`
+- These are **ML training features** — the forecast model learns correlations like "snow events in Denver → winter/all-terrain tire sales spike"
+
+### 5.2 Weather — Forecast (`EXT_WEATHER_FORECAST`)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `TEMP_HIGH_F` / `TEMP_LOW_F` | NUMBER | Predicted temperature |
+| `PRECIP_PROBABILITY_PCT` | NUMBER | Rain probability % |
+| `SNOW_PROBABILITY_PCT` | NUMBER | Snow probability % |
+| `EXPECTED_SNOW_IN` | NUMBER | Predicted snowfall |
+| `SEVERE_WEATHER_ALERT` | BOOLEAN | Active severe alert |
+| `FORECAST_CONFIDENCE` | NUMBER | Prediction confidence |
+
+**Granularity:** Next 14 days × zip code (448 records)
+
+**How it enters the system:**
+- Directly joined in `SP_GENERATE_PO_RECOMMENDATIONS()` by DC zip code
+- **Trigger rule in the WHERE clause:**
+  ```sql
+  WHERE ...
+     OR (wf.expected_snow_in > 4 AND ih.days_of_supply < 30)
+  ```
+  If a DC is expecting >4 inches of snow AND current supply is <30 days → **force a PO recommendation even if inventory looks okay** (preemptive restocking)
+- Stored in `RISK_FACTORS` JSON as `weather_severity` → fed to Cortex LLM for justification text
+
+**Live alerts right now:**
+| City | Date | Condition | Snow | Severe Alert |
+|------|------|-----------|------|--------------|
+| Minneapolis | Mar 23 | HEAVY_SNOW | 10.0" | YES |
+| Denver | Mar 24 | HEAVY_SNOW | 9.0" | YES |
+| Minneapolis | Mar 20 | HEAVY_SNOW | 9.0" | YES |
+
+### 5.3 Port Congestion (`EXT_PORT_CONGESTION`)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `CONGESTION_INDEX` | NUMBER(0-100) | Port congestion severity |
+| `AVG_WAIT_DAYS` | NUMBER | Average vessel waiting time |
+| `VESSELS_AT_ANCHOR` | NUMBER | Ships waiting to berth |
+| `CONTAINER_DWELL_TIME_DAYS` | NUMBER | Container processing time |
+| `THROUGHPUT_TEU` | NUMBER | Port throughput capacity |
+| `DELAY_TREND` | VARCHAR | IMPROVING / STABLE / VOLATILE |
+
+**Granularity:** Daily × port (5,642 records, 7 US ports, primary: Long Beach)
+
+**How it enters the system (two paths):**
+
+**Path 1 — ML training feature:**
+Joined into `AGG_DEMAND_DAILY` as `PORT_DELAY_INDEX` and `PORT_AVG_WAIT_DAYS`. The ML model uses historical port delays as context (supply disruptions affect future inventory).
+
+**Path 2 — Direct algorithm adjustment (this is the critical one):**
+```sql
+-- In SP_GENERATE_PO_RECOMMENDATIONS:
+
+-- If congestion > 70, add actual port wait days as buffer
+CASE WHEN pc.congestion_index > 70
+     THEN CEIL(pc.avg_wait_days)
+     ELSE 0
+END AS port_delay_buffer_days
+
+-- Buffer INCREASES the recommended order quantity
++ CEIL(avg_daily_sales * port_delay_buffer_days)
+
+-- Buffer EXTENDS the expected receipt date
+DATEADD(day, lead_time_days + port_delay_buffer_days, CURRENT_DATE())
+```
+
+**Live status right now:**
+| Port | Congestion Index | Wait Days | Vessels | Trend |
+|------|-----------------|-----------|---------|-------|
+| Long Beach | **73** (>70 threshold!) | **10 days** | 15 | STABLE |
+
+**Impact:** Because congestion = 73 > 70 threshold, **every single PO recommendation currently has a 10-day port delay buffer added**. All 1,266 DRAFT recommendations have `PORT_DELAY_BUFFER_DAYS = 10`. This means:
+- Order quantities are larger (extra 10 days of safety stock)
+- Expected receipt dates are 10 days later than base lead time
+- Total recommended spend is higher to cover the buffer period
+
+| Region | Recs | Total Cost | All Port-Delayed | Avg Lead + Buffer |
+|--------|------|-----------|-----------------|-------------------|
+| SOUTH | 448 | $3.7M | 448/448 (100%) | 26 + 10 = 36 days |
+| WEST | 336 | $3.2M | 336/336 (100%) | 26 + 10 = 36 days |
+| MIDWEST | 312 | $2.6M | 312/312 (100%) | 26 + 10 = 36 days |
+| EAST | 170 | $1.5M | 170/170 (100%) | 26 + 10 = 36 days |
+
+### 5.4 Economic Indicators (`EXT_ECONOMIC_INDICATORS`)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `CONSUMER_CONFIDENCE_INDEX` | NUMBER | Consumer spending willingness |
+| `GAS_PRICE_AVG` | NUMBER | Regional fuel prices |
+| `UNEMPLOYMENT_RATE` | NUMBER | Regional unemployment |
+| `INFLATION_RATE` | NUMBER | Current inflation rate |
+| `VEHICLE_SALES_INDEX` | NUMBER | New vehicle sales activity |
+
+**Granularity:** Monthly × state (648 records)
+
+**How it enters the system:**
+- Joined into `AGG_DEMAND_DAILY` by `state + month` → becomes columns `CONSUMER_CONFIDENCE_INDEX`, `FUEL_PRICE_REGIONAL`, `VEHICLE_SALES_INDEX`
+- These are **ML training features** that capture macro demand shifts:
+  - High gas prices → fewer miles driven → slower tire replacement
+  - High consumer confidence → more discretionary spending → more tire upgrades
+  - High vehicle sales → more new cars → less tire replacement (but more OE fitment)
+
+### 5.5 Vehicle Registrations (`EXT_VEHICLE_REGISTRATIONS`)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `VEHICLE_SEGMENT` | VARCHAR | Passenger, truck, SUV, commercial |
+| `REGISTERED_COUNT` | NUMBER | Vehicle registrations in area |
+| `AVG_VEHICLE_AGE` | NUMBER | Average age of registered vehicles |
+| `PCT_TRUCKS_SUVS` | NUMBER | Truck/SUV percentage of fleet |
+
+**Granularity:** Monthly × zip code × segment (3,072 records)
+
+**How it enters the system:**
+- Provides **addressable market context** for demand modeling
+- Older vehicles need more tire replacements → higher replacement demand
+- Regions with more trucks/SUVs → more demand for all-terrain and mud-terrain tires
+- Shifts in vehicle mix over time signal changing tire category demand
+
+---
+
+## 6. The Recommendation Algorithm
+
+### 6.1 Input Sources
+
+```
+INVENTORY_HEALTH_CURRENT ──→ qty_on_hand, days_of_supply, inventory_status,
+                              avg_daily_sales_7d, qty_in_transit, qty_on_order
+
+ML.FORECAST_DEMAND ────────→ predicted_demand_qty (7d, 14d, 28d), model_confidence
+
+DIM_VENDOR ────────────────→ avg_lead_time_days, min_order_qty, unit_cost
+
+EXT_PORT_CONGESTION ───────→ congestion_index, avg_wait_days (Long Beach latest)
+
+EXT_WEATHER_FORECAST ──────→ expected_snow_in, severe_weather_alert (7-day by zip)
+```
+
+### 6.2 Core Formulas
+
+**Port Delay Buffer:**
+```
+IF congestion_index > 70:
+    port_delay_buffer = CEIL(avg_wait_days)
+ELSE:
+    port_delay_buffer = 0
+```
+
+**Safety Stock:**
+```
+safety_stock = CEIL(avg_daily_sales_7d × 7)
+```
+
+**Reorder Point:**
+```
+reorder_point = CEIL(avg_daily_sales_7d × (lead_time_days + 7))
+```
+
+**Recommended Order Quantity:**
+```
+raw_need = 28d_forecast_demand
+         - qty_on_hand
+         - qty_in_transit
+         - qty_on_order
+         + safety_stock
+         + CEIL(avg_daily_sales × port_delay_buffer)
+
+recommended_qty = MAX(
+    CEIL(raw_need / min_order_qty) × min_order_qty,
+    min_order_qty
+)
+```
+
+**Expected Receipt Date:**
+```
+expected_receipt = TODAY + lead_time_days + port_delay_buffer
+```
+
+**Estimated Cost:**
+```
+estimated_cost = recommended_qty × unit_cost
+```
+
+### 6.3 Priority Score (0-100)
+
+```
+IF inventory_status IN (STOCKOUT, CRITICAL):  priority = 100
+IF inventory_status = LOW:                     priority = 70
+IF days_of_supply < lead_time_days:           priority = 90
+IF days_of_supply < (lead_time + port_delay): priority = 80
+ELSE:                                          priority = 50
+```
+
+### 6.4 Urgency Level
+
+```
+STOCKOUT or CRITICAL inventory → CRITICAL urgency
+LOW inventory                  → HIGH urgency
+days_of_supply < 21            → MEDIUM urgency
+Everything else                → LOW urgency
+```
+
+### 6.5 Trigger Conditions (WHO gets a recommendation)
+
+A PO recommendation is generated for a SKU-DC if ANY of these are true:
+1. `inventory_status IN ('STOCKOUT', 'CRITICAL', 'LOW')` — already at risk
+2. `days_of_supply < 21` — below target days of supply
+3. `expected_snow > 4" AND days_of_supply < 30` — **weather-triggered preemptive restock**
+
+### 6.6 Risk Factors JSON
+
+Each recommendation carries a `RISK_FACTORS` object for the LLM:
+```json
+{
+  "current_dos": 999,
+  "inventory_status": "STOCKOUT",
+  "lead_time": 27,
+  "port_delay": 10,
+  "weather_severity": 0
+}
+```
+This JSON is read by Cortex LLM (`SP_ADD_JUSTIFICATIONS`) which generates the human-readable `JUSTIFICATION_TEXT`.
+
+### 6.7 AI Justification (Cortex LLM)
+
+The final step calls Cortex Complete (LLM) for each recommendation. The LLM receives:
+- Current inventory position
+- Forecast demand
+- Lead time + port buffer
+- Weather severity
+- Inventory status
+
+And generates text like:
+> *"Recommend ordering 93 units because: 1. Current inventory of 1 unit is insufficient to meet potential demand. 2. Lead time of 25 days + port delay buffer of 10 days = 35 days to replenish. 3. Despite 7-day forecast demand of 0 units, the critical urgency and long lead time suggest maintaining safety stock."*
+
+---
+
+## 7. Current Recommendation State
+
+### 7.1 Summary (as of March 20, 2026)
+
+| Urgency | Status | Count | Total Cost |
+|---------|--------|-------|-----------|
+| CRITICAL | DRAFT | 1,170 | $10,165,345 |
+| CRITICAL | ACCEPTED | 2 | $16,438 |
+| CRITICAL | REJECTED | 1 | $4,948 |
+| HIGH | DRAFT | 96 | $784,389 |
+| **Total** | | **1,269** | **$10,971,120** |
+
+### 7.2 Active External Influences
+
+- **Port of Long Beach:** Congestion index 73 (above 70 threshold) → 10-day buffer on ALL recommendations
+- **Minneapolis DC:** Heavy snow alerts (9-10") Mar 20-24 → preemptive winter tire restocking triggered
+- **Denver DC:** Heavy snow alert (9") Mar 24 → preemptive restocking triggered
+
+---
+
+## 8. Streamlit Dashboard — Tread Intelligence
+
+Six-tab interactive dashboard (`streamlit_app.py`):
+
+| Tab | Content | Data Source |
+|-----|---------|-------------|
+| **PO History** | Historical PO spend over time, by region/vendor, lead time box plots | `FACT_PURCHASE_ORDERS` + dims |
+| **Recommendations** | AI-justified PO recs, Accept/Reject buttons, daily/weekly toggle, impact preview | `V_BUYER_DASHBOARD`, `V_DASHBOARD_SUMMARY` |
+| **Actions Log** | Accepted/rejected tracking with reviewer, timestamps, spend | `V_RECOMMENDATION_ACTIONS` |
+| **Inventory** | Status donut chart, low-stock alerts, regional qty breakdown | `INVENTORY_HEALTH_CURRENT` |
+| **Sales** | Revenue trends, daily/weekly toggle, brand and regional splits | `AGG_DEMAND_DAILY`, `AGG_DEMAND_WEEKLY` |
+| **Forecast** | Historical→forecast chart with confidence bands, seasonal/weather analysis | `FORECAST_DEMAND`, `AGG_DEMAND_DAILY` |
+
+### Accept/Reject Workflow
+- Buyer clicks Accept/Reject on a recommendation in the dashboard
+- Calls `SP_UPDATE_RECOMMENDATION_STATUS(id, status, reviewer, notes)`
+- Updates `RECOMMENDATION_STATUS`, `REVIEWER_ID`, `REVIEWED_AT`, `REVIEWER_NOTES`
+- Full audit trail visible in Actions Log tab
+
+---
+
+## 9. Notification System
+
+### 9.1 Email Integration
+- Integration: `TIRECO_EMAIL_INT` (type: EMAIL)
+- Daily: `SP_SEND_DAILY_EMAIL(recipient)` → calls `SP_GENERATE_DAILY_NOTIFICATION()`
+- Weekly: `SP_SEND_WEEKLY_EMAIL(recipient)` → calls `SP_GENERATE_WEEKLY_NOTIFICATION()`
+
+### 9.2 Slack Integration
+- Template: `setup_slack_integration.sql` (requires webhook URL configuration)
+- Daily: `SP_SEND_DAILY_SLACK()` → webhook notification
+- Weekly: `SP_SEND_WEEKLY_SLACK()` → webhook notification
+
+### 9.3 Notification Content
+**Daily** — Critical/High item count, total spend, top 5 critical items with SKU/DC/qty/cost
+**Weekly** — Week summary: generated/accepted/rejected/pending counts and spend, breakdown by region
+
+### 9.4 Scheduled Tasks
+| Task | Schedule | Status |
+|------|----------|--------|
+| `TASK_DAILY_PO_NOTIFICATION` | 8 AM PT daily | Suspended (resume when ready) |
+| `TASK_WEEKLY_PO_NOTIFICATION` | Monday 8 AM PT | Suspended (resume when ready) |
+
+Activate:
+```sql
+ALTER TASK TIRECO_DW.ORCHESTRATION.TASK_DAILY_PO_NOTIFICATION RESUME;
+ALTER TASK TIRECO_DW.ORCHESTRATION.TASK_WEEKLY_PO_NOTIFICATION RESUME;
+```
+
+---
+
+## 10. Cortex Agent & Semantic Model
+
+### 10.1 Cortex Agent
+- Definition: `create_tread_intelligence_agent.sql`
+- Uses Cortex Analyst (text-to-SQL) + data-to-chart tools
+- Buyers can ask natural language questions:
+  - *"What should I order for Denver this week?"*
+  - *"Which SKUs are at critical inventory levels?"*
+  - *"Show me high-priority recommendations for the West region"*
+
+### 10.2 Semantic Model
+- File: `tread_intelligence_semantic_model.yaml`
+- Maps business terms to physical tables/columns
+- Enables Cortex Analyst to generate accurate SQL from plain English
+
+---
+
+## 11. Complete Object Inventory
+
+### 11.1 Tables
+
+| Schema | Table | Rows | Purpose |
+|--------|-------|------|---------|
+| BRONZE | RAW_ERP_PURCHASE_ORDERS | 7,409 | Source PO headers |
+| BRONZE | RAW_ERP_PO_LINE_ITEMS | — | Source PO line items |
+| BRONZE | RAW_ERP_PO_RECEIPTS | — | PO receipt records |
+| BRONZE | RAW_ERP_VENDORS | — | Vendor master |
+| BRONZE | RAW_ERP_VENDOR_TERMS | — | Vendor terms (lead time, MOQ) |
+| BRONZE | RAW_WMS_DISTRIBUTION_CENTERS | — | DC master data |
+| BRONZE | RAW_WMS_INVENTORY | 6,772 | Current inventory positions |
+| BRONZE | RAW_WMS_INVENTORY_TRANSACTIONS | — | Inventory movements |
+| BRONZE | RAW_TMS_CARRIERS | — | Carrier information |
+| BRONZE | RAW_TMS_SHIPMENTS | — | Shipment records |
+| BRONZE | RAW_MDM_PRODUCTS | — | Product master |
+| BRONZE | RAW_MDM_PRODUCT_HIERARCHY | — | Product categories |
+| BRONZE | RAW_MDM_TIRE_SPECS | — | Tire specifications |
+| BRONZE | RAW_MDM_VEHICLE_FITMENT | — | Vehicle-tire fitment |
+| BRONZE | RAW_CRM_CUSTOMERS | — | Customer master |
+| BRONZE | RAW_SALES_ORDERS | 244,084 | Sales order headers |
+| BRONZE | RAW_SALES_ORDER_LINES | — | Sales line items |
+| BRONZE | RAW_SALES_RETURNS | — | Return records |
+| BRONZE | RAW_SUPP_CAPACITY | — | Supplier capacity |
+| BRONZE | RAW_SUPP_SCORECARDS | — | Supplier scorecards |
+| BRONZE | RAW_PRICE_LIST | — | Current price list |
+| BRONZE | RAW_PRICE_COST_HISTORY | — | Historical pricing |
+| EXTERNAL | EXT_WEATHER_HISTORICAL | 25,792 | 2yr daily weather × zip |
+| EXTERNAL | EXT_WEATHER_FORECAST | 448 | 14-day forecast × zip |
+| EXTERNAL | EXT_PORT_CONGESTION | 5,642 | Daily port metrics × 7 ports |
+| EXTERNAL | EXT_ECONOMIC_INDICATORS | 648 | Monthly economics × state |
+| EXTERNAL | EXT_VEHICLE_REGISTRATIONS | 3,072 | Monthly vehicles × zip |
+| SILVER | DIM_DATE | 1,461 | Date dimension (4 years) |
+| SILVER | DIM_PRODUCT | 250 | Product dimension (SCD2) |
+| SILVER | DIM_LOCATION | 32 | DC/Location dimension (SCD2) |
+| SILVER | DIM_VENDOR | 8 | Vendor dimension (SCD2) |
+| SILVER | DIM_CUSTOMER | 1,192 | Customer dimension |
+| SILVER | FACT_SALES_ORDERS | 97,510 | Sales fact table |
+| SILVER | FACT_PURCHASE_ORDERS | 11,327 | PO fact table |
+| SILVER | FACT_INVENTORY_SNAPSHOT | 6,772 | Inventory snapshot fact |
+| GOLD | AGG_DEMAND_DAILY | 5,848,000 | Daily demand (dynamic, 49 cols) |
+| GOLD | AGG_DEMAND_WEEKLY | 840,000 | Weekly demand (dynamic) |
+| GOLD | INVENTORY_HEALTH_CURRENT | 6,772 | Current health (dynamic) |
+| ML | FORECAST_DEMAND | 3,584 | ML predictions (7-28d horizon) |
+| PROCUREMENT | PO_RECOMMENDATIONS | 1,269 | AI-generated PO recs |
+| ORCHESTRATION | NOTIFICATION_LOG | — | Notification audit trail |
+
+### 11.2 Views
+
+| Schema | View | Purpose |
+|--------|------|---------|
+| PROCUREMENT | V_BUYER_DASHBOARD | Enriched recs with region/brand (DRAFT/PENDING only) |
+| PROCUREMENT | V_DASHBOARD_SUMMARY | KPI metrics for dashboard header |
+| PROCUREMENT | V_RECOMMENDATION_ACTIONS | Accepted/Rejected audit trail with location/product |
+
+### 11.3 Stored Procedures
+
+| Schema | Procedure | Purpose |
+|--------|-----------|---------|
+| ML | SP_GENERATE_FORECASTS() | Cortex ML time-series forecasting |
+| PROCUREMENT | SP_GENERATE_PO_RECOMMENDATIONS() | Core recommendation algorithm |
+| PROCUREMENT | SP_ADD_JUSTIFICATIONS() | Cortex LLM justification text |
+| PROCUREMENT | SP_UPDATE_RECOMMENDATION_STATUS() | Accept/Reject workflow |
+| ORCHESTRATION | SP_GENERATE_DAILY_NOTIFICATION() | Daily summary content |
+| ORCHESTRATION | SP_GENERATE_WEEKLY_NOTIFICATION() | Weekly report content |
+| ORCHESTRATION | SP_SEND_DAILY_EMAIL(email) | Email daily summary |
+| ORCHESTRATION | SP_SEND_WEEKLY_EMAIL(email) | Email weekly report |
+| ORCHESTRATION | SP_SEND_DAILY_SLACK() | Slack daily summary |
+| ORCHESTRATION | SP_SEND_WEEKLY_SLACK() | Slack weekly report |
+| INTEGRATIONS | SP_PUSH_APPROVED_POS() | Push accepted POs to ERP |
+
+### 11.4 Tasks
+
+| Task | Schedule | Predecessor | Status |
+|------|----------|-------------|--------|
+| TASK_DAILY_PIPELINE_ROOT | 6 AM PT daily | — | STARTED |
+| TASK_REFRESH_GOLD_LAYER | — | PIPELINE_ROOT | STARTED |
+| TASK_GENERATE_FORECASTS | — | REFRESH_GOLD | STARTED |
+| TASK_GENERATE_PO_RECS | — | GENERATE_FORECASTS | STARTED |
+| TASK_ADD_JUSTIFICATIONS | — | GENERATE_PO_RECS | STARTED |
+| TASK_DAILY_PO_NOTIFICATION | 8 AM PT daily | — | SUSPENDED |
+| TASK_WEEKLY_PO_NOTIFICATION | Mon 8 AM PT | — | SUSPENDED |
+
+### 11.5 Integrations
+
+| Name | Type | Purpose |
+|------|------|---------|
+| TIRECO_EMAIL_INT | EMAIL | Send email notifications |
+
+### 11.6 Stages
+
+| Schema | Stage | Purpose |
+|--------|-------|---------|
+| APPS | STREAMLIT_STAGE | Streamlit app files |
+| SEMANTIC | MODELS | Semantic model YAML for Cortex Analyst |
+
+---
+
+## 12. Local Workspace Files
+
+| File | Purpose |
+|------|---------|
+| `streamlit_app.py` | Main Tread Intelligence 6-tab dashboard |
+| `Untitled.sql` | Master deployment script (all DDL/DML from Phase 1-8) |
+| `setup_slack_integration.sql` | Slack webhook setup template |
+| `skills/procurement-intelligence.yaml` | Cortex Code skill: PO recs & inventory |
+| `skills/inventory-forecasting.yaml` | Cortex Code skill: demand & forecast |
+| `skills/supply-chain-notifications.yaml` | Cortex Code skill: notification setup |
+| `.snowflake/cortex/skills/uploaded-skill/SKILL.md` | Master design document |
+| `.snowflake/cortex/skills/uploaded-skill/SAFETY_GUARDRAILS.md` | Agent safety rules |
+| `.snowflake/cortex/skills/uploaded-skill/create_tread_intelligence_agent.sql` | Cortex Agent DDL |
+| `.snowflake/cortex/skills/uploaded-skill/deploy_output_layer.sql` | Gold/ML/Procurement DDL |
+| `.snowflake/cortex/skills/uploaded-skill/tread_intelligence_agent_chat.py` | Agent chat Streamlit |
+| `.snowflake/cortex/skills/uploaded-skill/tread_intelligence_buyer_dashboard.py` | Original buyer dashboard (V1) |
+| `.snowflake/cortex/skills/uploaded-skill/tread_intelligence_semantic_model.yaml` | Semantic model YAML |
