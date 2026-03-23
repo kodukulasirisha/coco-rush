@@ -1,0 +1,67 @@
+name: supply-chain-notifications
+description: |
+  Supply Chain Notification & Alerting skill for setting up and managing
+  automated email and Slack notifications for procurement events, inventory
+  alerts, and recommendation summaries. Works with Snowflake notification
+  integrations, tasks, and stored procedures.
+
+instructions:
+  - title: "Email Notification Setup"
+    content: |
+      To set up email notifications:
+      1. Create a notification integration:
+         CREATE NOTIFICATION INTEGRATION my_email_int TYPE=EMAIL ENABLED=TRUE;
+      2. Verify recipient email addresses (users must verify in Snowsight)
+      3. Send via SYSTEM$SEND_EMAIL(integration_name, recipients, subject, body)
+      4. Or use SYSTEM$SEND_SNOWFLAKE_NOTIFICATION with EMAIL_INTEGRATION_CONFIG
+
+  - title: "Slack Webhook Setup"
+    content: |
+      To set up Slack notifications:
+      1. Create an Incoming Webhook in your Slack workspace
+      2. Store the webhook secret:
+         CREATE SECRET my_slack_secret TYPE=GENERIC_STRING SECRET_STRING='<webhook_secret>';
+      3. Create webhook integration:
+         CREATE NOTIFICATION INTEGRATION my_slack_int TYPE=WEBHOOK ENABLED=TRUE
+           WEBHOOK_URL='https://hooks.slack.com/services/SNOWFLAKE_WEBHOOK_SECRET'
+           WEBHOOK_SECRET=my_db.my_schema.my_slack_secret
+           WEBHOOK_BODY_TEMPLATE='{"text": "SNOWFLAKE_WEBHOOK_MESSAGE"}'
+           WEBHOOK_HEADERS=('Content-Type'='application/json');
+      4. Send via SYSTEM$SEND_SNOWFLAKE_NOTIFICATION with SANITIZE_WEBHOOK_CONTENT
+
+  - title: "Scheduling Notifications"
+    content: |
+      To schedule automated notifications:
+      1. Create stored procedures that generate notification content
+      2. Create Snowflake Tasks with CRON schedules:
+         - Daily: USING CRON 0 8 * * * America/Los_Angeles
+         - Weekly (Monday): USING CRON 0 8 * * 1 America/Los_Angeles
+      3. Resume tasks: ALTER TASK task_name RESUME;
+      4. Monitor: SELECT * FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY())
+
+  - title: "Notification Content Best Practices"
+    content: |
+      For effective notifications:
+      1. Include summary metrics (count, spend, urgency breakdown)
+      2. Highlight top critical items with actionable details
+      3. Include a link to the dashboard for full review
+      4. Log all notifications for audit trail
+      5. Use emojis for visual scanning in Slack messages
+      6. Keep email subject lines specific and actionable
+
+example_queries:
+  - question: "Send a test daily notification"
+    sql: "CALL ORCHESTRATION.SP_GENERATE_DAILY_NOTIFICATION()"
+
+  - question: "Send a test weekly notification"
+    sql: "CALL ORCHESTRATION.SP_GENERATE_WEEKLY_NOTIFICATION()"
+
+  - question: "Check notification history"
+    sql: |
+      SELECT * FROM ORCHESTRATION.NOTIFICATION_LOG
+      ORDER BY SENT_AT DESC LIMIT 20
+
+  - question: "How do I activate the notification tasks?"
+    answer: |
+      ALTER TASK ORCHESTRATION.TASK_DAILY_PO_NOTIFICATION RESUME;
+      ALTER TASK ORCHESTRATION.TASK_WEEKLY_PO_NOTIFICATION RESUME;

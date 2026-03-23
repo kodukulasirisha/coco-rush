@@ -1,0 +1,96 @@
+name: procurement-intelligence
+description: |
+  Procurement Intelligence skill for analyzing purchase orders, inventory health,
+  demand forecasting, and PO recommendation management. Works with any company's
+  data warehouse that follows a standard procurement data model with fact tables
+  for purchase orders, sales, inventory, and a recommendations engine.
+
+instructions:
+  - title: "Data Model Requirements"
+    content: |
+      This skill expects the following schema pattern (adapt table names to your environment):
+      - BRONZE schema: Raw source system tables (ERP POs, WMS Inventory, Sales Orders)
+      - SILVER schema: Conformed dimensions (DIM_DATE, DIM_PRODUCT, DIM_LOCATION, DIM_VENDOR, DIM_CUSTOMER)
+                       and facts (FACT_PURCHASE_ORDERS, FACT_SALES_ORDERS, FACT_INVENTORY_SNAPSHOT)
+      - GOLD schema: Analytics-ready aggregations (AGG_DEMAND_DAILY, AGG_DEMAND_WEEKLY, INVENTORY_HEALTH_CURRENT)
+      - ML schema: Forecast outputs (FORECAST_DEMAND)
+      - PROCUREMENT schema: PO_RECOMMENDATIONS with accept/reject workflow
+
+  - title: "PO Recommendation Analysis"
+    content: |
+      When analyzing PO recommendations:
+      1. Always check URGENCY_LEVEL (CRITICAL, HIGH, MEDIUM, LOW) and PRIORITY_SCORE
+      2. Review JUSTIFICATION_TEXT for AI-generated reasoning
+      3. Check CURRENT_INVENTORY_QTY, CURRENT_DAYS_OF_SUPPLY, FORECAST_DEMAND_7D/14D/28D
+      4. Calculate projected impact: new_inventory = current + recommended_order_qty
+      5. Consider LEAD_TIME_DAYS + PORT_DELAY_BUFFER_DAYS for total replenishment time
+      6. Use V_BUYER_DASHBOARD view for enriched recommendation data with region/brand context
+
+  - title: "Inventory Health Assessment"
+    content: |
+      For inventory analysis:
+      1. Use INVENTORY_HEALTH_CURRENT for current state (QTY_ON_HAND, DAYS_OF_SUPPLY, INVENTORY_STATUS)
+      2. INVENTORY_STATUS values: OVERSTOCK, HEALTHY, LOW, CRITICAL
+      3. Key metrics: days of supply, fill rate, stockout risk
+      4. Cross-reference with AGG_DEMAND_DAILY for velocity trends
+      5. Check QTY_IN_TRANSIT and QTY_ON_ORDER for incoming supply
+
+  - title: "Demand Forecasting"
+    content: |
+      For forecast analysis:
+      1. Use ML.FORECAST_DEMAND for predicted demand with confidence intervals
+      2. Check MODEL_CONFIDENCE, WEATHER_IMPACT_PCT, SEASONALITY_IMPACT_PCT, TREND_IMPACT_PCT
+      3. ANOMALY_FLAG indicates unusual demand patterns
+      4. Compare PREDICTED_DEMAND_QTY vs ACTUAL_DEMAND_QTY for model accuracy
+      5. Use FORECAST_ERROR_PCT for error distribution analysis
+
+  - title: "Notification Management"
+    content: |
+      For notifications:
+      1. Daily summaries via SP_GENERATE_DAILY_NOTIFICATION (critical/high priority focus)
+      2. Weekly reports via SP_GENERATE_WEEKLY_NOTIFICATION (full week summary with accept/reject stats)
+      3. Email via SYSTEM$SEND_EMAIL with notification integration
+      4. Slack via SYSTEM$SEND_SNOWFLAKE_NOTIFICATION with webhook integration
+      5. All notifications logged in ORCHESTRATION.NOTIFICATION_LOG
+
+  - title: "Accept/Reject Workflow"
+    content: |
+      For recommendation management:
+      1. Use SP_UPDATE_RECOMMENDATION_STATUS(id, status, reviewer, notes)
+      2. Valid statuses: DRAFT -> ACCEPTED or REJECTED
+      3. REVIEWED_AT timestamp auto-set on status change
+      4. Use V_RECOMMENDATION_ACTIONS view for action history with location/product context
+      5. Track conversion via CONVERTED_PO_ID when accepted recommendations become actual POs
+
+example_queries:
+  - question: "What are the critical PO recommendations?"
+    sql: |
+      SELECT SKU_NAME, DC_NAME, RECOMMENDED_ORDER_QTY, ESTIMATED_COST, JUSTIFICATION_TEXT
+      FROM PROCUREMENT.V_BUYER_DASHBOARD
+      WHERE URGENCY_LEVEL = 'CRITICAL'
+      ORDER BY PRIORITY_SCORE DESC
+
+  - question: "What is the current inventory health by region?"
+    sql: |
+      SELECT REGION, INVENTORY_STATUS, COUNT(*) AS SKU_COUNT,
+             SUM(QTY_ON_HAND) AS TOTAL_ON_HAND, SUM(EXTENDED_COST) AS TOTAL_VALUE
+      FROM GOLD.INVENTORY_HEALTH_CURRENT
+      GROUP BY REGION, INVENTORY_STATUS
+      ORDER BY REGION, INVENTORY_STATUS
+
+  - question: "Show weekly sales trends"
+    sql: |
+      SELECT WEEK_START_DATE, REGION, SUM(TOTAL_SALES_QTY) AS SALES_QTY,
+             SUM(TOTAL_SALES_REVENUE) AS REVENUE, SUM(STOCKOUT_DAYS) AS STOCKOUT_DAYS
+      FROM GOLD.AGG_DEMAND_WEEKLY
+      GROUP BY WEEK_START_DATE, REGION
+      ORDER BY WEEK_START_DATE DESC
+
+  - question: "What recommendations were accepted this week?"
+    sql: |
+      SELECT SKU_NAME, DC_NAME, RECOMMENDED_ORDER_QTY, ESTIMATED_COST,
+             REVIEWER_ID, REVIEWED_AT, REVIEWER_NOTES
+      FROM PROCUREMENT.V_RECOMMENDATION_ACTIONS
+      WHERE RECOMMENDATION_STATUS = 'ACCEPTED'
+        AND REVIEWED_AT >= DATEADD(day, -7, CURRENT_TIMESTAMP())
+      ORDER BY REVIEWED_AT DESC

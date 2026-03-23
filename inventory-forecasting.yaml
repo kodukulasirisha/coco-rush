@@ -1,0 +1,70 @@
+name: inventory-forecasting
+description: |
+  Inventory Forecasting & Demand Planning skill for analyzing demand patterns,
+  ML forecast accuracy, seasonality, and stockout risk. Works with any company
+  that has historical sales data, inventory snapshots, and ML demand forecasts.
+
+instructions:
+  - title: "Demand Pattern Analysis"
+    content: |
+      When analyzing demand:
+      1. Use AGG_DEMAND_DAILY for granular daily analysis (includes weather, port delays, economic indicators)
+      2. Use AGG_DEMAND_WEEKLY for trend analysis (includes stockout days, avg daily sales)
+      3. Key columns: SALES_QTY, SALES_REVENUE, INVENTORY_EOD, DAYS_OF_SUPPLY, STOCKOUT_FLAG
+      4. External factors: WEATHER_SEVERITY_INDEX, PORT_DELAY_INDEX, CONSUMER_CONFIDENCE_INDEX
+      5. Seasonality: Use SEASON, MONTH_ACTUAL, DAY_OF_WEEK_NAME for pattern detection
+
+  - title: "Forecast Model Evaluation"
+    content: |
+      For ML forecast evaluation:
+      1. Compare PREDICTED_DEMAND_QTY vs ACTUAL_DEMAND_QTY in FORECAST_DEMAND
+      2. Use FORECAST_ERROR_PCT for accuracy measurement
+      3. MODEL_CONFIDENCE indicates prediction reliability
+      4. Impact decomposition: WEATHER_IMPACT_PCT, SEASONALITY_IMPACT_PCT, TREND_IMPACT_PCT
+      5. ANOMALY_FLAG identifies unusual demand patterns needing investigation
+      6. PREDICTION_LOWER_95 and PREDICTION_UPPER_95 for confidence intervals
+
+  - title: "Stockout Risk Assessment"
+    content: |
+      For stockout prevention:
+      1. STOCKOUT_FLAG in AGG_DEMAND_DAILY indicates historical stockout days
+      2. DAYS_OF_SUPPLY < LEAD_TIME_DAYS + PORT_DELAY_BUFFER indicates reorder urgency
+      3. Cross-reference INVENTORY_HEALTH_CURRENT.INVENTORY_STATUS for current risk
+      4. Use FORECAST_DEMAND to project future stockout risk
+      5. Consider seasonal demand spikes (e.g., all-terrain tires in fall, snow tires in winter)
+
+  - title: "Seasonal Planning"
+    content: |
+      For seasonal analysis:
+      1. Tire industry peaks: Spring (Mar-Apr) for all-season, Fall (Oct-Nov) for all-terrain/winter
+      2. Regional variations: West/Midwest need winter tires earlier
+      3. Weather correlation: snow/rain events drive demand for specific tire types
+      4. Use AGG_DEMAND_DAILY.SEASON and MONTH_ACTUAL for seasonal decomposition
+      5. Compare year-over-year patterns using YEAR_ACTUAL
+
+example_queries:
+  - question: "What are the demand trends by season?"
+    sql: |
+      SELECT SEASON, CATEGORY_L2, AVG(SALES_QTY) AS AVG_DAILY_SALES,
+             SUM(STOCKOUT_FLAG) AS STOCKOUT_DAYS
+      FROM GOLD.AGG_DEMAND_DAILY
+      GROUP BY SEASON, CATEGORY_L2
+      ORDER BY AVG_DAILY_SALES DESC
+
+  - question: "How accurate are our forecasts?"
+    sql: |
+      SELECT MODEL_VERSION,
+             AVG(ABS(FORECAST_ERROR_PCT)) AS MAE_PCT,
+             AVG(MODEL_CONFIDENCE) AS AVG_CONFIDENCE,
+             COUNT(CASE WHEN ANOMALY_FLAG THEN 1 END) AS ANOMALY_COUNT
+      FROM ML.FORECAST_DEMAND
+      WHERE ACTUAL_DEMAND_QTY IS NOT NULL
+      GROUP BY MODEL_VERSION
+
+  - question: "Which SKUs are at stockout risk?"
+    sql: |
+      SELECT ih.SKU_NAME, ih.DC_NAME, ih.REGION, ih.QTY_AVAILABLE,
+             ih.DAYS_OF_SUPPLY, ih.AVG_DAILY_SALES_7D, ih.INVENTORY_STATUS
+      FROM GOLD.INVENTORY_HEALTH_CURRENT ih
+      WHERE ih.INVENTORY_STATUS IN ('LOW', 'CRITICAL')
+      ORDER BY ih.DAYS_OF_SUPPLY ASC
