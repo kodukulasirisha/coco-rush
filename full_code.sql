@@ -3,7 +3,6 @@
 -- Complete End-to-End Implementation
 -- =====================================================================================
 -- Version: 1.0
--- Date: March 16, 2026
 -- Description: This script creates the complete data infrastructure for predictive
 --              inventory management and automated PO recommendations
 -- =====================================================================================
@@ -1518,96 +1517,10 @@ JOIN DIM_LOCATION dl ON po.dc_id = dl.location_id AND dl.is_current = TRUE;
 
 USE SCHEMA TIRECO_DW.GOLD;
 
-
--- AGG_DEMAND_DAILY: Primary ML training table with all signals
-CREATE OR REPLACE DYNAMIC TABLE AGG_DEMAND_DAILY
-    TARGET_LAG = '1 hour'
-    WAREHOUSE = DASH_WH_SI
-AS
-SELECT 
-    d.date_actual AS date_actual,
-    p.sku_id,
-    p.sku_code,
-    p.sku_name,
-    p.brand_name,
-    p.category_l1,
-    p.category_l2,
-    p.tire_type,
-    p.price_tier,
-    l.location_id AS dc_id,
-    l.dc_code,
-    l.dc_name,
-    l.city,
-    l.state,
-    l.zip_code,
-    l.region,
-    l.climate_zone,
-    d.day_of_week,
-    d.day_of_week_name,
-    d.is_weekend,
-    d.week_of_year,
-    d.month_actual,
-    d.quarter_actual,
-    d.year_actual,
-    d.season,
-    COALESCE(SUM(f.ordered_qty), 0) AS sales_qty,
-    COALESCE(SUM(f.extended_price), 0) AS sales_revenue,
-    COUNT(DISTINCT f.order_line_id) AS sales_orders_count,
-    COALESCE(AVG(f.unit_price), 0) AS avg_unit_price,
-    COALESCE(AVG(f.gross_margin), 0) AS avg_gross_margin,
-    COALESCE(inv.qty_on_hand, 0) AS inventory_eod,
-    COALESCE(inv.qty_in_transit, 0) AS qty_in_transit,
-    COALESCE(inv.qty_on_order, 0) AS qty_on_order,
-    CASE WHEN COALESCE(SUM(f.ordered_qty), 1) > 0 THEN COALESCE(inv.qty_on_hand, 0) / GREATEST(COALESCE(SUM(f.ordered_qty), 1) / 7, 0.1) ELSE 999 END AS days_of_supply,
-    CASE WHEN COALESCE(inv.qty_on_hand, 0) < 10 THEN 1 ELSE 0 END AS stockout_flag,
-    COALESCE(w.temp_high_f, 70) AS weather_temp_high_f,
-    COALESCE(w.temp_low_f, 50) AS weather_temp_low_f,
-    COALESCE(w.precipitation_in, 0) AS weather_precip_in,
-    COALESCE(w.snowfall_in, 0) AS weather_snow_in,
-    COALESCE(w.weather_severity_index, 1) AS weather_severity_index,
-    COALESCE(w.condition_code, 'CLEAR') AS weather_condition_code,
-    COALESCE(pc.congestion_index, 50) AS port_delay_index,
-    COALESCE(pc.avg_wait_days, 3) AS port_avg_wait_days,
-    COALESCE(ei.consumer_confidence_index, 100) AS consumer_confidence_index,
-    COALESCE(ei.gas_price_avg, 3.50) AS fuel_price_regional,
-    COALESCE(ei.vehicle_sales_index, 100) AS vehicle_sales_index
-FROM TIRECO_DW.SILVER.DIM_DATE d
-CROSS JOIN TIRECO_DW.SILVER.DIM_PRODUCT p
-CROSS JOIN TIRECO_DW.SILVER.DIM_LOCATION l
-LEFT JOIN TIRECO_DW.SILVER.FACT_SALES_ORDERS f 
-    ON f.order_date_sk = d.date_sk 
-    AND f.product_sk = p.product_sk 
-    AND f.ship_from_location_sk = l.location_sk
-LEFT JOIN TIRECO_DW.SILVER.FACT_INVENTORY_SNAPSHOT inv 
-    ON inv.product_sk = p.product_sk 
-    AND inv.location_sk = l.location_sk
-LEFT JOIN TIRECO_DW.EXTERNAL.EXT_WEATHER_HISTORICAL w 
-    ON w.zip_code = l.zip_code 
-    AND w.date = d.date_actual
-LEFT JOIN TIRECO_DW.EXTERNAL.EXT_PORT_CONGESTION pc 
-    ON pc.port_code = 'USLGB' 
-    AND pc.date = d.date_actual
-LEFT JOIN TIRECO_DW.EXTERNAL.EXT_ECONOMIC_INDICATORS ei 
-    ON ei.state = l.state 
-    AND DATE_TRUNC('month', ei.month) = DATE_TRUNC('month', d.date_actual)
-WHERE d.date_actual >= DATEADD(day, -730, CURRENT_DATE())
-  AND d.date_actual <= CURRENT_DATE()
-  AND p.is_current = TRUE
-  AND l.is_current = TRUE
-  AND l.location_type = 'DC'
-GROUP BY 
-    d.date_actual, d.date_sk, d.day_of_week, d.day_of_week_name, d.is_weekend, d.week_of_year, d.month_actual, d.quarter_actual, d.year_actual, d.season,
-    p.product_sk, p.sku_id, p.sku_code, p.sku_name, p.brand_name, p.category_l1, p.category_l2, p.tire_type, p.price_tier,
-    l.location_sk, l.location_id, l.dc_code, l.dc_name, l.city, l.state, l.zip_code, l.region, l.climate_zone,
-    inv.qty_on_hand, inv.qty_in_transit, inv.qty_on_order,
-    w.temp_high_f, w.temp_low_f, w.precipitation_in, w.snowfall_in, w.weather_severity_index, w.condition_code,
-    pc.congestion_index, pc.avg_wait_days,
-    ei.consumer_confidence_index, ei.gas_price_avg, ei.vehicle_sales_index;
-
 -- AGG_DEMAND_WEEKLY: Weekly rollup for trend analysis
 CREATE OR REPLACE DYNAMIC TABLE AGG_DEMAND_WEEKLY
     TARGET_LAG = '1 hour'
-    WAREHOUSE = DASH_WH_SI
+    WAREHOUSE = SIRI_OPT
 AS
 SELECT 
     DATE_TRUNC('week', date_actual)::DATE AS week_start_date,
@@ -1635,7 +1548,7 @@ GROUP BY DATE_TRUNC('week', date_actual), sku_id, sku_code, brand_name, category
 -- INVENTORY_HEALTH_CURRENT: Real-time inventory status
 CREATE OR REPLACE DYNAMIC TABLE INVENTORY_HEALTH_CURRENT
     TARGET_LAG = '1 hour'
-    WAREHOUSE = DASH_WH_SI
+    WAREHOUSE = SIRI_OPT
 AS
 SELECT 
     p.sku_id,
@@ -2003,35 +1916,35 @@ USE SCHEMA TIRECO_DW.ORCHESTRATION;
 
 -- Root Task: Triggers daily pipeline
 CREATE OR REPLACE TASK TASK_DAILY_PIPELINE_ROOT
-    WAREHOUSE = DASH_WH_SI
+    WAREHOUSE = SIRI_OPT
     SCHEDULE = 'USING CRON 0 6 * * * America/Denver'
 AS
     SELECT 'Pipeline started at ' || CURRENT_TIMESTAMP();
 
 -- Task: Refresh Dynamic Tables
 CREATE OR REPLACE TASK TASK_REFRESH_GOLD_LAYER
-    WAREHOUSE = DASH_WH_SI
+    WAREHOUSE = SIRI_OPT
     AFTER TASK_DAILY_PIPELINE_ROOT
 AS
     ALTER DYNAMIC TABLE TIRECO_DW.GOLD.AGG_DEMAND_DAILY REFRESH;
 
 -- Task: Generate Forecasts
 CREATE OR REPLACE TASK TASK_GENERATE_FORECASTS
-    WAREHOUSE = DASH_WH_SI
+    WAREHOUSE = SIRI_OPT
     AFTER TASK_REFRESH_GOLD_LAYER
 AS
     CALL TIRECO_DW.ML.SP_GENERATE_FORECASTS();
 
 -- Task: Generate PO Recommendations
 CREATE OR REPLACE TASK TASK_GENERATE_PO_RECS
-    WAREHOUSE = DASH_WH_SI
+    WAREHOUSE = SIRI_OPT
     AFTER TASK_GENERATE_FORECASTS
 AS
     CALL TIRECO_DW.PROCUREMENT.SP_GENERATE_PO_RECOMMENDATIONS();
 
 -- Task: Add LLM Justifications
 CREATE OR REPLACE TASK TASK_ADD_JUSTIFICATIONS
-    WAREHOUSE = DASH_WH_SI
+    WAREHOUSE = SIRI_OPT
     AFTER TASK_GENERATE_PO_RECS
 AS
     CALL TIRECO_DW.PROCUREMENT.SP_ADD_JUSTIFICATIONS();
@@ -2111,6 +2024,91 @@ CALL TIRECO_DW.PROCUREMENT.SP_GENERATE_PO_RECOMMENDATIONS();
 -- View results
 SELECT * FROM TIRECO_DW.PROCUREMENT.V_BUYER_DASHBOARD LIMIT 20;
 SELECT * FROM TIRECO_DW.PROCUREMENT.V_DASHBOARD_SUMMARY;
+
+-- =====================================================================================
+-- PHASE 13: RECOMMENDATION ACTIONS AUDIT VIEW
+-- =====================================================================================
+
+CREATE OR REPLACE VIEW TIRECO_DW.PROCUREMENT.V_RECOMMENDATION_ACTIONS AS
+SELECT 
+    pr.RECOMMENDATION_ID,
+    pr.RECOMMENDATION_STATUS,
+    pr.REVIEWER_ID,
+    pr.REVIEWED_AT,
+    pr.REVIEWER_NOTES,
+    pr.CONVERTED_PO_ID,
+    pr.GENERATED_AT,
+    DATEDIFF('hour', pr.GENERATED_AT, pr.REVIEWED_AT) AS HOURS_TO_ACTION,
+    pr.SKU_CODE,
+    pr.SKU_NAME,
+    pr.DC_CODE,
+    pr.DC_NAME,
+    pr.VENDOR_NAME,
+    pr.RECOMMENDED_ORDER_QTY,
+    pr.ESTIMATED_COST,
+    pr.PRIORITY_SCORE,
+    pr.URGENCY_LEVEL,
+    pr.JUSTIFICATION_TEXT,
+    l.REGION,
+    l.STATE,
+    l.CITY,
+    p.BRAND_NAME,
+    p.CATEGORY_L1,
+    p.CATEGORY_L2,
+    p.TIRE_SIZE_DISPLAY,
+    p.PRICE_TIER
+FROM TIRECO_DW.PROCUREMENT.PO_RECOMMENDATIONS pr
+LEFT JOIN TIRECO_DW.SILVER.DIM_LOCATION l 
+    ON pr.DC_CODE = l.DC_CODE AND l.IS_CURRENT = TRUE
+LEFT JOIN TIRECO_DW.SILVER.DIM_PRODUCT p 
+    ON pr.SKU_ID = p.SKU_ID AND p.IS_CURRENT = TRUE
+WHERE pr.RECOMMENDATION_STATUS IN ('ACCEPTED', 'REJECTED', 'CONVERTED')
+ORDER BY pr.REVIEWED_AT DESC;
+
+-- =====================================================================================
+-- PHASE 14: RECOMMENDATION STATUS UPDATE PROCEDURE
+-- =====================================================================================
+
+CREATE OR REPLACE PROCEDURE TIRECO_DW.PROCUREMENT.SP_UPDATE_RECOMMENDATION_STATUS(
+    P_RECOMMENDATION_ID NUMBER,
+    P_NEW_STATUS VARCHAR,
+    P_REVIEWER_ID VARCHAR,
+    P_REVIEWER_NOTES VARCHAR
+)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+DECLARE
+    v_current_status VARCHAR;
+    v_result VARCHAR;
+BEGIN
+    SELECT RECOMMENDATION_STATUS INTO v_current_status
+    FROM TIRECO_DW.PROCUREMENT.PO_RECOMMENDATIONS
+    WHERE RECOMMENDATION_ID = :P_RECOMMENDATION_ID;
+
+    IF (v_current_status IS NULL) THEN
+        RETURN 'ERROR: Recommendation ID ' || :P_RECOMMENDATION_ID || ' not found.';
+    END IF;
+
+    IF (v_current_status NOT IN ('DRAFT', 'PENDING_REVIEW')) THEN
+        RETURN 'ERROR: Cannot update recommendation in status ' || v_current_status || '. Only DRAFT or PENDING_REVIEW can be updated.';
+    END IF;
+
+    IF (:P_NEW_STATUS NOT IN ('ACCEPTED', 'REJECTED', 'PENDING_REVIEW')) THEN
+        RETURN 'ERROR: Invalid status ' || :P_NEW_STATUS || '. Must be ACCEPTED, REJECTED, or PENDING_REVIEW.';
+    END IF;
+
+    UPDATE TIRECO_DW.PROCUREMENT.PO_RECOMMENDATIONS
+    SET RECOMMENDATION_STATUS = :P_NEW_STATUS,
+        REVIEWER_ID = :P_REVIEWER_ID,
+        REVIEWED_AT = CURRENT_TIMESTAMP(),
+        REVIEWER_NOTES = :P_REVIEWER_NOTES
+    WHERE RECOMMENDATION_ID = :P_RECOMMENDATION_ID;
+
+    v_result := 'SUCCESS: Recommendation ' || :P_RECOMMENDATION_ID || ' updated to ' || :P_NEW_STATUS;
+    RETURN v_result;
+END;
 
 -- =====================================================================================
 -- END OF TREAD INTELLIGENCE IMPLEMENTATION
